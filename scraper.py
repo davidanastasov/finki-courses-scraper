@@ -272,6 +272,9 @@ def process_quiz(page, quiz):
 
     # Look for continue button
     continue_btn = page.query_selector("button[type='submit']:has-text('Continue the last attempt')")
+
+    if (continue_btn is None):
+        continue_btn = page.query_selector("button[type='submit']:has-text('Attempt quiz now')")
     
     if continue_btn:
         continue_btn.click()
