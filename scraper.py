@@ -10,6 +10,15 @@ from markdownify import markdownify as md
 # Configuration
 BASE_URL = "https://courses.finki.ukim.mk"
 COOKIES_FILE = "cookies.json"
+MINIMAL_WORKING_CODE = """
+#include <iostream>
+
+using namespace std;
+
+int main() {
+  return 0;
+}
+"""
 
 COURSES = [
     "Сп-2024/2025/Z",
@@ -118,13 +127,36 @@ def remove_unwanted_elements(page):
                 contentDiv.querySelectorAll('.ui_wrapper').forEach(el => { el.remove() });
                 contentDiv.querySelectorAll('.im-controls').forEach(el => { el.remove() });
                 contentDiv.querySelectorAll('.prompt').forEach(el => { el.remove() });
+                contentDiv.querySelector('textarea.coderunner-answer')?.remove()
             }
         """)
         sleep(0.1)
         if (page.query_selector("div.content .ui_wrapper") is None and 
             page.query_selector("div.content .im-controls") is None and 
-            page.query_selector("div.content .prompt") is None):
+            page.query_selector("div.content .prompt") is None) and \
+            page.query_selector("div.content textarea.coderunner-answer") is None:
             break
+
+def ensure_question_fully_loaded(page):
+    """Ensure the question is fully loaded by submitting minimal code if needed."""
+    content_div = page.query_selector("div.content")
+    if not content_div:
+        return None
+
+    # If no valid answer is provided, the question won't show all the test cases
+    # Insert a sample code to ensure the question is fully loaded
+    outcome_section = content_div.query_selector(".outcome table")
+    if not outcome_section:
+        page.evaluate(f"document.querySelector('textarea.coderunner-answer').value = `{MINIMAL_WORKING_CODE}`;")
+
+        # Type submit, value Check
+        check_answer_button = page.query_selector("input[type='submit'][value='Check']")
+        if check_answer_button:
+            check_answer_button.click()
+            sleep(3) # Wait for the page to update with test results
+        else:
+            print("No 'Check' button found, only partial output will be available.")
+
 
 def extract_question_content(page):
     """Extract and convert question content to markdown."""
@@ -132,17 +164,23 @@ def extract_question_content(page):
     if not content_div:
         return None
     
-    # Remove unwanted elements
-    remove_unwanted_elements(page)
-    
+    # Save starter code if found
+    starter_code = ""
+    reset_button = page.query_selector("input[type='button'].answer_reset_btn")
+    if reset_button:
+        reload_text = reset_button.get_attribute("data-reload-text")
+        if reload_text:
+            starter_code = reload_text.strip()
+
     # Extract textarea content separately for proper code formatting
     textarea_content = ""
     textarea = page.query_selector("textarea.coderunner-answer")
     if textarea:
         textarea_content = textarea.input_value()
-        # Remove the textarea from the content to avoid duplication
-        page.evaluate("document.querySelector('textarea.coderunner-answer')?.remove()")
     
+    # Remove unwanted  elements
+    remove_unwanted_elements(page)
+
     sleep(0.5)
 
     # Get the cleaned HTML content
@@ -154,10 +192,14 @@ def extract_question_content(page):
                         bullets="-",
                         code_language="",
                         strip=['script', 'style'])
+
+    # If starter code is available, add it as a code block
+    if starter_code.strip():
+        content_markdown += f"\n\n## Starter Code:\n\n```cpp\n{starter_code.strip()}\n```\n"        
     
     # Add textarea content as a code block if it exists
-    if textarea_content.strip():
-        content_markdown += f"\n\n## Code:\n\n```cpp\n{textarea_content}\n```\n"
+    if textarea_content.strip() and textarea_content.strip() != MINIMAL_WORKING_CODE.strip():
+        content_markdown += f"\n\n## Saved Code:\n\n```cpp\n{textarea_content.strip()}\n```\n"
     
     return content_markdown
 
@@ -181,6 +223,7 @@ def process_quiz_questions(page, quiz, course):
     for button in question_buttons:
         question_number = button.inner_text().strip()
         question_link = button.get_attribute("href")
+        solved = button.query_selector(".answersaved") is not None
         
         # If the link is "#", use the current page URL (for initially selected question)
         if question_link == "#":
@@ -192,13 +235,23 @@ def process_quiz_questions(page, quiz, course):
         
         questions.append({
             'number': clean_number,
-            'link': question_link
+            'link': question_link,
+            'completed': solved
         })
     
     # Process each question
     for question in questions:
         page.goto(question['link'])
-        
+
+        # Make sure all the page content is shown
+        ensure_question_fully_loaded(page)
+
+        # Take full page screenshot
+        screenshots_subfolder = os.path.join(output_folder, "screenshots")
+        os.makedirs(screenshots_subfolder, exist_ok=True)
+        screenshot_path = f"{screenshots_subfolder}/{question['number']}.png"
+        page.screenshot(path=screenshot_path, full_page=True)
+
         # Extract content and save as markdown
         content_markdown = extract_question_content(page)
         if content_markdown:
@@ -208,11 +261,6 @@ def process_quiz_questions(page, quiz, course):
         else:
             print(f"No content found for question {question['number']}")
         
-        # Take full page screenshot
-        screenshots_subfolder = os.path.join(output_folder, "screenshots")
-        os.makedirs(screenshots_subfolder, exist_ok=True)
-        screenshot_path = f"{screenshots_subfolder}/{question['number']}.png"
-        page.screenshot(path=screenshot_path, full_page=True)
     
     print(f"Completed processing all questions in quiz '{quiz['name']}'")
     return True
@@ -257,7 +305,6 @@ def process_course(page, course):
     # Let the user select quizzes
     selected_quizzes = select_quizzes(quiz_groups)
     if not selected_quizzes:
-        print("No quizzes selected.")
         return False
 
     print("Selected quizzes:")
