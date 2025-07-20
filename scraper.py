@@ -59,8 +59,40 @@ def login(page):
         password_field = page.query_selector("#password")
         submit_button = page.query_selector(".btn-submit")
 
-        username = questionary.text("Enter your username:").ask()
-        password = questionary.password("Enter your password:").ask()
+        # Handle questionary prompts with event loop management
+        def get_credentials():
+            # Try to get the current event loop
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            
+            # If there's a running loop, we need to handle it differently
+            if current_loop is not None:
+                # Run questionary in a thread to avoid event loop conflicts
+                import concurrent.futures
+                
+                def run_questionary():
+                    # Create a new event loop for this thread
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        username = questionary.text("Enter your username:").ask()
+                        password = questionary.password("Enter your password:").ask()
+                        return username, password
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_questionary)
+                    return future.result()
+            else:
+                # No event loop running, can use questionary directly
+                username = questionary.text("Enter your username:").ask()
+                password = questionary.password("Enter your password:").ask()
+                return username, password
+
+        username, password = get_credentials()
 
         if username_field and password_field and submit_button:
             username_field.fill(username)
