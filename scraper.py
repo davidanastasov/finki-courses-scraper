@@ -10,12 +10,7 @@ from markdownify import markdownify as md
 # Configuration
 BASE_URL = "https://courses.finki.ukim.mk"
 COOKIES_FILE = "cookies.json"
-MINIMAL_WORKING_CODE = """
-#include <iostream>
-
-using namespace std;
-
-int main() {
+MINIMAL_WORKING_CODE = """int main() {
   return 0;
 }
 """
