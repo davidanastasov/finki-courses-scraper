@@ -132,13 +132,221 @@ def get_quiz_groups(page):
                     quiz_name = instancename.evaluate("el => el.childNodes[0].textContent").strip()
                     quiz_list.append({
                         'name': quiz_name,
-                        'url': link.get_attribute("href")
+                        'url': link.get_attribute("href"),
+                        'type': 'quiz'
                     })
 
             if quiz_list:
                 quiz_groups[section_name_text] = quiz_list
 
     return quiz_groups
+
+def get_all_resources(page):
+    """Extract all resources (PDFs, URLs, Quizzes) grouped by sections."""
+    sections = page.query_selector_all("li.section.main")
+    resource_groups = {}
+
+    for section in sections:
+        # Extract the section name
+        section_name = section.query_selector(".sectionname span")
+        if section_name:
+            section_name_text = section_name.inner_text().strip()
+            resource_list = []
+
+            # Find PDF files (mod/resource)
+            pdf_links = section.query_selector_all("a.aalink[href*='mod/resource']")
+            for link in pdf_links:
+                instancename = link.query_selector(".instancename")
+                if instancename:
+                    resource_name = instancename.evaluate("el => el.childNodes[0].textContent").strip()
+                    resource_list.append({
+                        'name': f"📄 {resource_name}",
+                        'url': link.get_attribute("href"),
+                        'type': 'pdf',
+                        'display_name': resource_name
+                    })
+
+            # Find URL links (mod/url)
+            url_links = section.query_selector_all("a.aalink[href*='mod/url']")
+            for link in url_links:
+                instancename = link.query_selector(".instancename")
+                if instancename:
+                    resource_name = instancename.evaluate("el => el.childNodes[0].textContent").strip()
+                    resource_list.append({
+                        'name': f"🔗 {resource_name}",
+                        'url': link.get_attribute("href"),
+                        'type': 'url',
+                        'display_name': resource_name
+                    })
+
+            # Find quizzes
+            quiz_links = section.query_selector_all("a.aalink:has(.accesshide:text(' Quiz'))")
+            for link in quiz_links:
+                instancename = link.query_selector(".instancename")
+                if instancename:
+                    quiz_name = instancename.evaluate("el => el.childNodes[0].textContent").strip()
+                    resource_list.append({
+                        'name': f"📝 {quiz_name}",
+                        'url': link.get_attribute("href"),
+                        'type': 'quiz',
+                        'display_name': quiz_name
+                    })
+
+            if resource_list:
+                resource_groups[section_name_text] = resource_list
+
+    return resource_groups
+
+def select_all_resources(resource_groups):
+    """Prompt user to select all types of resources (PDFs, URLs, Quizzes) grouped by sections."""
+    
+    # Create a single list of choices with separators for sections
+    all_choices = []
+    
+    for section_name, resources in resource_groups.items():
+        if not resources:  # Skip empty sections
+            continue
+        
+        # Add section separator
+        all_choices.append(questionary.Separator(f"=== {section_name} ==="))
+        
+        # Add resource choices for this section
+        for resource in resources:
+            all_choices.append(questionary.Choice(title=resource['name'], value=resource))
+    
+    # Show single checkbox prompt with all sections
+    if all_choices:
+        # Try to get the current event loop
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        
+        # If there's a running loop, we need to handle it differently
+        if current_loop is not None:
+            # Run questionary in a thread to avoid event loop conflicts
+            import concurrent.futures
+            import threading
+            
+            def run_questionary():
+                # Create a new event loop for this thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return questionary.checkbox(
+                        "Select resources to download (📄 PDFs, 🔗 URLs, 📝 Quizzes):",
+                        choices=all_choices
+                    ).ask()
+                finally:
+                    new_loop.close()
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_questionary)
+                selected_resources = future.result()
+        else:
+            # No event loop running, can use questionary directly
+            selected_resources = questionary.checkbox(
+                "Select resources to download (📄 PDFs, 🔗 URLs, 📝 Quizzes):",
+                choices=all_choices
+            ).ask()
+        
+        if selected_resources:
+            print(f"\nSelected {len(selected_resources)} resource(s) total")
+            return selected_resources
+        else:
+            print("No resources selected")
+            return []
+    else:
+        print("No resources found")
+        return []
+
+def download_pdf_resource(page, resource, course_folder):
+    """Download a PDF resource."""
+    try:
+        # Create downloads folder
+        pdf_folder = os.path.join(course_folder, "documents")
+        os.makedirs(pdf_folder, exist_ok=True)
+        
+        # Set up download handling
+        def handle_download(download):
+            # Get the suggested filename or create one
+            suggested_name = download.suggested_filename
+            if not suggested_name or not suggested_name.endswith('.pdf'):
+                suggested_name = f"{clean_filename(resource['display_name'])}.pdf"
+            
+            download_path = os.path.join(pdf_folder, suggested_name)
+            download.save_as(download_path)
+            print(f"PDF downloaded: {suggested_name}")
+        
+        # Listen for downloads
+        page.on("download", handle_download)
+        
+        # Navigate to the PDF URL - this should trigger the download
+        try:
+            page.goto(resource['url'], wait_until="domcontentloaded")
+        except Exception:
+            # Download might have started immediately, that's expected
+            pass
+        
+        sleep(1)  # Brief wait for download to start
+        
+        # Remove the download listener
+        page.remove_listener("download", handle_download)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error downloading PDF {resource['display_name']}: {e}")
+        return False
+
+def open_url_resource(page, resource, course_folder):
+    """Open and capture a URL resource."""
+    try:
+        # Navigate to the URL using the existing page
+        page.goto(resource['url'])
+        sleep(1)
+        
+        current_url = page.url
+        
+        # Check if we got redirected outside the base domain (scenario 2)
+        if not current_url.startswith(BASE_URL):
+            # External redirect - save the redirected URL
+            url_folder = os.path.join(course_folder, "links")
+            os.makedirs(url_folder, exist_ok=True)
+            
+            url_info_path = os.path.join(url_folder, f"{clean_filename(resource['display_name'])}.txt")
+            with open(url_info_path, 'w', encoding='utf-8') as f:
+                f.write(f"Name: {resource['display_name']}\n")
+                f.write(f"URL: {current_url}\n")
+            
+            print(f"URL extracted: {resource['display_name']} -> {current_url}")
+            return True
+        
+        # We're still on the base domain - check for scenario 1 (urlworkaround div)
+        urlworkaround_div = page.query_selector(".urlworkaround")
+        if urlworkaround_div:
+            # Extract the actual link from the urlworkaround div
+            link_element = urlworkaround_div.query_selector("a")
+            if link_element:
+                actual_url = link_element.get_attribute("href")
+                
+                # Save the extracted URL info
+                url_folder = os.path.join(course_folder, "links")
+                os.makedirs(url_folder, exist_ok=True)
+                
+                url_info_path = os.path.join(url_folder, f"{resource['display_name']}.txt")
+                with open(url_info_path, 'w', encoding='utf-8') as f:
+                    f.write(f"Name: {resource['display_name']}\n")
+                    f.write(f"URL: {actual_url}\n")
+                
+                print(f"URL extracted: {resource['display_name']} -> {actual_url}")
+                return True
+        
+        raise Exception("No way to extract URL from the page")
+        
+    except Exception as e:
+        print(f"Error capturing URL {resource['display_name']}: {e}")
+        return False
 
 def clean_filename(name):
     """Clean a string to be used as a filename."""
@@ -350,25 +558,35 @@ def process_course(page, course):
     course_link.click()
     sleep(1)
 
-    # Get quiz groups for this course
-    quiz_groups = get_quiz_groups(page)
-    if not quiz_groups:
-        print(f"No quizzes found for course: {course}")
-        return False
+    course_name_clean = clean_filename(course)
+    course_folder = f"output/{course_name_clean}"
+    os.makedirs(course_folder, exist_ok=True)
 
-    # Let the user select quizzes
-    selected_quizzes = select_quizzes(quiz_groups)
-    if not selected_quizzes:
-        return False
-
-    print("Selected quizzes:")
-    for quiz in selected_quizzes:
-        print(f"- {quiz['name']} ({quiz['url']})")
-
-    # Process each selected quiz
-    for quiz in selected_quizzes:
-        if process_quiz(page, quiz):
-            process_quiz_questions(page, quiz, course)
+    # Get all resources (PDFs, URLs, Quizzes) and let user select
+    print(f"\n=== Processing {course} ===")
+    resource_groups = get_all_resources(page)
+    
+    if resource_groups:
+        selected_resources = select_all_resources(resource_groups)
+        
+        if selected_resources:
+            print("Selected resources:")
+            for resource in selected_resources:
+                print(f"- {resource['name']} ({resource['url']})")
+            
+            # Process each selected resource by type
+            for resource in selected_resources:
+                if resource['type'] == 'pdf':
+                    download_pdf_resource(page, resource, course_folder)
+                elif resource['type'] == 'url':
+                    open_url_resource(page, resource, course_folder)
+                elif resource['type'] == 'quiz':
+                    if process_quiz(page, resource):
+                        process_quiz_questions(page, resource, course)
+        else:
+            print("No resources selected")
+    else:
+        print("No resources found")
 
     return True
 
