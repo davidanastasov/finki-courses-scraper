@@ -586,8 +586,6 @@ def process_course(page, course):
                 elif resource['type'] == 'quiz':
                     if process_quiz(page, resource):
                         process_quiz_questions(page, resource, course)
-        else:
-            print("No resources selected")
     else:
         print("No resources found")
 
