@@ -9,16 +9,12 @@ from markdownify import markdownify as md
 
 # Configuration
 BASE_URL = "https://courses.finki.ukim.mk"
+DASHBOARD_URL = "https://courses.finki.ukim.mk/my/"
 COOKIES_FILE = "cookies.json"
 MINIMAL_WORKING_CODE = """int main() {
   return 0;
 }
 """
-
-COURSES = [
-    "Сп-2024/2025/Z",
-    "ОOП-2024/2025/L-46_42822"
-]
 
 def load_cookies(page):
     """Load saved cookies if they exist."""
@@ -514,21 +510,13 @@ def process_quiz(page, quiz):
         print(f"No continue button found for quiz: {quiz['name']}")
         return False
 
-def process_course(page, course):
+def process_course(page, course_name, course_url):
     """Process a single course."""
-    page.goto(BASE_URL)
-    sleep(1)
+    # Navigate directly to the course URL
+    page.goto(course_url)
+    sleep(2)
 
-    # Find the course link and click it
-    course_link = page.query_selector(f"a:has-text('{course}')")
-    if not course_link:
-        print(f"Course link '{course}' not found")
-        return False
-    
-    course_link.click()
-    sleep(1)
-
-    course_name_clean = clean_filename(course)
+    course_name_clean = clean_filename(course_name)
     course_folder = f"output/{course_name_clean}"
     os.makedirs(course_folder, exist_ok=True)
 
@@ -536,7 +524,7 @@ def process_course(page, course):
     capture_course_overview(page, course_folder)
 
     # Get all resources (PDFs, URLs, Quizzes) and let user select
-    print(f"\n=== Processing {course} ===")
+    print(f"\n=== Processing {course_name} ===")
     resource_groups = get_all_resources(page)
     
     if resource_groups:
@@ -555,7 +543,7 @@ def process_course(page, course):
                     open_url_resource(page, resource, course_folder)
                 elif resource['type'] == 'quiz':
                     if process_quiz(page, resource):
-                        process_quiz_questions(page, resource, course)
+                        process_quiz_questions(page, resource, course_name)
     else:
         print("No resources found")
 
@@ -583,6 +571,126 @@ def capture_course_overview(page, course_folder):
         print(f"Error capturing course overview: {e}")
         return False
 
+def get_available_courses(page):
+    """Get all available courses from the user's dashboard."""
+    try:
+        # Navigate to dashboard
+        page.goto(DASHBOARD_URL)
+        sleep(2)
+        
+        # Ensure "All (except removed from view)" is selected in grouping dropdown
+        grouping_button = page.query_selector("#groupingdropdown")
+        if grouping_button:
+            current_text = page.query_selector("#groupingdropdown span[data-active-item-text]")
+            if current_text and "All (except removed from view)" not in current_text.inner_text():
+                # Click dropdown and select "All (except removed from view)"
+                grouping_button.click()
+                sleep(1)
+                all_option = page.query_selector('a[data-value="all"][data-filter="grouping"]')
+                if all_option:
+                    all_option.click()
+                    sleep(2)  # Wait for page to reload
+        
+        # Ensure "List" view is selected in display dropdown
+        display_button = page.query_selector("#displaydropdown")
+        if display_button:
+            current_text = page.query_selector("#displaydropdown span[data-active-item-text]")
+            if current_text and "List" not in current_text.inner_text():
+                # Click dropdown and select "List"
+                display_button.click()
+                sleep(1)
+                list_option = page.query_selector('a[data-value="list"]')
+                if list_option:
+                    list_option.click()
+                    sleep(3)  # Wait for page to reload with list view
+        
+        # Wait for courses to load
+        sleep(2)
+        
+        # Extract course information from the course overview block
+        course_links = page.query_selector_all(".block-myoverview a.aalink.coursename")
+        courses = []
+        
+        for link in course_links:
+            try:
+                # Get only the text content, ignoring any nested elements
+                raw_text = link.inner_text().strip()
+                url = link.get_attribute("href")
+                
+                # Clean up the course name - remove "Course name" prefix and newlines
+                course_name = raw_text.replace("Course name", "").strip()
+                # Remove any leading/trailing whitespace and newlines
+                course_name = " ".join(course_name.split())
+                
+                # Skip if no valid course name or URL
+                if not course_name or not url:
+                    continue
+                
+                courses.append({
+                    'name': course_name,
+                    'url': url
+                })
+            except Exception as e:
+                print(f"Error parsing course link: {e}")
+                continue
+        
+        return courses
+        
+    except Exception as e:
+        print(f"Error getting courses: {e}")
+        return []
+
+def select_courses(available_courses):
+    """Prompt user to select courses to process."""
+    if not available_courses:
+        print("No courses found")
+        return []
+    
+    # Create choices for questionary
+    choices = []
+    for course in available_courses:
+        choices.append(questionary.Choice(
+            title=course['name'],
+            value=course
+        ))
+    
+    # Handle questionary with event loop management
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+    
+    if current_loop is not None:
+        # Run questionary in a thread to avoid event loop conflicts
+        import concurrent.futures
+        
+        def run_questionary():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return questionary.checkbox(
+                    "Select courses to process:",
+                    choices=choices
+                ).ask()
+            finally:
+                new_loop.close()
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(run_questionary)
+            selected_courses = future.result()
+    else:
+        # No event loop running, can use questionary directly
+        selected_courses = questionary.checkbox(
+            "Select courses to process:",
+            choices=choices
+        ).ask()
+    
+    if selected_courses:
+        print(f"\nSelected {len(selected_courses)} course(s)")
+        return selected_courses
+    else:
+        return []
+
 def main():
     """Main function to run the scraper."""
     with sync_playwright() as p:
@@ -600,9 +708,25 @@ def main():
             browser.close()
             return
 
-        # Process each course
-        for course in COURSES:
-            process_course(page, course)
+        print()
+
+        # Get available courses from dashboard
+        available_courses = get_available_courses(page)
+        if not available_courses:
+            print("No available courses found")
+            browser.close()
+            return
+
+        # Let user select courses to process
+        selected_courses = select_courses(available_courses)
+        if not selected_courses:
+            print("No courses selected")
+            browser.close()
+            return
+
+        # Process each selected course
+        for course in selected_courses:
+            process_course(page, course['name'], course['url'])
 
         page.goto("about:blank") # Free up any still open resources
 
