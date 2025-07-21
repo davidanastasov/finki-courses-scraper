@@ -145,6 +145,22 @@ def clean_filename(name):
     clean_name = re.sub(r'[^\w\s-]', '', name).strip()
     return re.sub(r'\s+', '_', clean_name)
 
+def remove_header_and_footer(page):
+    """Hide PII from the page header and footer for privacy in screenshots."""
+    try:
+        page.evaluate("""
+            document.querySelectorAll('.navbar').forEach(el => el.remove());
+            document.querySelectorAll('footer').forEach(el => el.remove());
+        """)
+
+        # Wait for the nav and footer elements to be removed
+        page.wait_for_selector('.navbar', state='detached', timeout=3000)  # 3-second timeout
+        page.wait_for_selector('footer', state='detached', timeout=3000)  # 3-second timeout
+
+    except Exception as e:
+        print(f"Could not hide user name: {e}")
+
+
 def remove_unwanted_elements(page):
     """Remove unwanted UI elements from the page content."""
     for _ in range(10):  # Try up to 10 times in case of race conditions
@@ -273,11 +289,8 @@ def process_quiz_questions(page, quiz, course):
         # Make sure all the page content is shown
         ensure_question_fully_loaded(page)
 
-        # Take full page screenshot
-        screenshots_subfolder = os.path.join(output_folder, "screenshots")
-        os.makedirs(screenshots_subfolder, exist_ok=True)
-        screenshot_path = f"{screenshots_subfolder}/{question['number']}.png"
-        page.screenshot(path=screenshot_path, full_page=True)
+        # Remove PII
+        remove_header_and_footer(page)
 
         # Extract content and save as markdown
         content_markdown = extract_question_content(page)
@@ -287,6 +300,14 @@ def process_quiz_questions(page, quiz, course):
                 f.write(content_markdown)
         else:
             print(f"No content found for question {question['number']}")
+
+        # Take full page screenshot
+        screenshots_subfolder = os.path.join(output_folder, "screenshots")
+        os.makedirs(screenshots_subfolder, exist_ok=True)
+        screenshot_path = f"{screenshots_subfolder}/{question['number']}.png"
+        content_div = page.query_selector("div.content")
+        if content_div:
+            content_div.screenshot(path=screenshot_path)
         
     
     print(f"Completed processing all questions in quiz '{quiz['name']}'")
