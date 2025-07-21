@@ -307,6 +307,7 @@ def process_quiz_questions(page, quiz, course):
         screenshot_path = f"{screenshots_subfolder}/{question['number']}.png"
         content_div = page.query_selector("div.content")
         if content_div:
+            content_div.evaluate("el => el.style.width = '1366px'")
             content_div.screenshot(path=screenshot_path)
         
     
