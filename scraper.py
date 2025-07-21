@@ -6,6 +6,10 @@ import os
 import asyncio
 import re
 from markdownify import markdownify as md
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+console = Console()
 
 # Configuration
 BASE_URL = "https://courses.finki.ukim.mk"
@@ -23,10 +27,9 @@ def load_cookies(page):
             with open(COOKIES_FILE, 'r') as f:
                 cookies = json.load(f)
             page.context.add_cookies(cookies)
-            print("Loaded saved cookies")
             return True
         except Exception as e:
-            print(f"Failed to load cookies: {e}")
+            console.print(f"[red]Failed to load cookies: {e}[/red]")
             return False
     return False
 
@@ -36,10 +39,9 @@ def save_cookies(page):
         cookies = page.context.cookies()
         with open(COOKIES_FILE, 'w') as f:
             json.dump(cookies, f)
-        print("Cookies saved successfully")
         return True
     except Exception as e:
-        print(f"Failed to save cookies: {e}")
+        console.print(f"[red]Failed to save cookies: {e}[/red]")
         return False
 
 def login(page):
@@ -47,8 +49,13 @@ def login(page):
     login_link = page.query_selector("a:has-text('Log in')")
     
     if login_link:
-        print("Login required, proceeding with login...")
+        console.print("[yellow]Login required, proceeding with login...[/yellow]")
         login_link.click()
+
+        # Check if maybe already logged in
+        if page.url.startswith(BASE_URL):
+            console.print("[yellow]Already logged into CAS, skipping login step...[/yellow]")
+            return True
         
         # Find username and password fields
         username_field = page.query_selector("#username")
@@ -93,18 +100,20 @@ def login(page):
         if username_field and password_field and submit_button:
             username_field.fill(username)
             password_field.fill(password)
-            submit_button.click()
-            print("Login submitted")
-            sleep(3)
+            
+            with console.status("[bold green]Logging in..."):
+                submit_button.click()
+                sleep(3)
+
+            console.print(f"[green]✓ Logged in as {username}[/green]")
             
             # Save cookies after successful login
             save_cookies(page)
             return True
         else:
-            print("Login fields or button not found")
+            console.print("[red]Login fields or button not found[/red]")
             return False
     else:
-        print("Already logged in, skipping login process")
         return True
 
 def get_all_resources(page):
@@ -217,16 +226,14 @@ def select_all_resources(resource_groups):
             ).ask()
         
         if selected_resources:
-            print(f"\nSelected {len(selected_resources)} resource(s) total")
             return selected_resources
         else:
-            print("No resources selected")
             return []
     else:
-        print("No resources found")
+        console.print("[yellow]No resources found[/yellow]")
         return []
 
-def download_pdf_resource(page, resource, course_folder):
+def download_pdf_resource(page, resource, course_folder, task_id=None, progress=None):
     """Download a PDF resource."""
     try:
         # Create downloads folder
@@ -242,7 +249,6 @@ def download_pdf_resource(page, resource, course_folder):
             
             download_path = os.path.join(pdf_folder, suggested_name)
             download.save_as(download_path)
-            print(f"PDF downloaded: {suggested_name}")
         
         # Listen for downloads
         page.on("download", handle_download)
@@ -262,10 +268,10 @@ def download_pdf_resource(page, resource, course_folder):
         return True
         
     except Exception as e:
-        print(f"Error downloading PDF {resource['display_name']}: {e}")
+        console.print(f"[red]Error downloading PDF {resource['display_name']}: {e}[/red]")
         return False
 
-def open_url_resource(page, resource, course_folder):
+def open_url_resource(page, resource, course_folder, task_id=None, progress=None):
     """Open and capture a URL resource."""
     try:
         # Navigate to the URL using the existing page
@@ -285,7 +291,6 @@ def open_url_resource(page, resource, course_folder):
                 f.write(f"Name: {resource['display_name']}\n")
                 f.write(f"URL: {current_url}\n")
             
-            print(f"URL extracted: {resource['display_name']} -> {current_url}")
             return True
         
         # We're still on the base domain - check for scenario 1 (urlworkaround div)
@@ -305,13 +310,12 @@ def open_url_resource(page, resource, course_folder):
                     f.write(f"Name: {resource['display_name']}\n")
                     f.write(f"URL: {actual_url}\n")
                 
-                print(f"URL extracted: {resource['display_name']} -> {actual_url}")
                 return True
         
         raise Exception("No way to extract URL from the page")
         
     except Exception as e:
-        print(f"Error capturing URL {resource['display_name']}: {e}")
+        console.print(f"[red]Error capturing URL {resource['display_name']}: {e}[/red]")
         return False
 
 def clean_filename(name):
@@ -332,9 +336,7 @@ def remove_header_and_footer(page):
         page.wait_for_selector('footer', state='detached', timeout=3000)  # 3-second timeout
 
     except Exception as e:
-        print(f"Could not hide user name: {e}")
-
-
+        console.print(f"[red]Could not hide user name: {e}[/red]")
 def remove_unwanted_elements(page):
     """Remove unwanted UI elements from the page content."""
     for _ in range(10):  # Try up to 10 times in case of race conditions
@@ -374,7 +376,7 @@ def ensure_question_fully_loaded(page):
             check_answer_button.click()
             sleep(3) # Wait for the page to update with test results
         else:
-            print("No 'Check' button found, only partial output will be available.")
+            console.print("[yellow]No 'Check' button found, only partial output will be available.[/yellow]")
 
 
 def extract_question_content(page):
@@ -422,7 +424,7 @@ def extract_question_content(page):
     
     return content_markdown
 
-def process_quiz_questions(page, quiz, course):
+def process_quiz_questions(page, quiz, course, task_id=None, progress=None):
     """Process all questions in a quiz."""
     course_name_clean = clean_filename(course)
     quiz_name_clean = clean_filename(quiz['name'])
@@ -432,10 +434,8 @@ def process_quiz_questions(page, quiz, course):
     # Find all question navigation buttons
     question_buttons = page.query_selector_all("a.qnbutton")
     if not question_buttons:
-        print("No question buttons found in quiz")
+        console.print("[yellow]No question buttons found in quiz[/yellow]")
         return False
-    
-    print(f"Found {len(question_buttons)} questions in quiz")
     
     # Store question data
     questions = []
@@ -459,7 +459,10 @@ def process_quiz_questions(page, quiz, course):
         })
     
     # Process each question
-    for question in questions:
+    for i, question in enumerate(questions, 1):
+        if progress and task_id:
+            progress.update(task_id, description=f"Quiz question {i}/{len(questions)}")
+        
         page.goto(question['link'])
 
         # Make sure all the page content is shown
@@ -475,7 +478,7 @@ def process_quiz_questions(page, quiz, course):
             with open(markdown_path, 'w', encoding='utf-8') as f:
                 f.write(content_markdown)
         else:
-            print(f"No content found for question {question['number']}")
+            console.print(f"[yellow]No content found for question {question['number']}[/yellow]")
 
         # Take full page screenshot
         screenshots_subfolder = os.path.join(output_folder, "screenshots")
@@ -486,8 +489,9 @@ def process_quiz_questions(page, quiz, course):
             content_div.evaluate("el => el.style.width = '1366px'")
             content_div.screenshot(path=screenshot_path)
         
+        if progress and task_id:
+            progress.advance(task_id, 1)
     
-    print(f"Completed processing all questions in quiz '{quiz['name']}'")
     return True
 
 def process_quiz(page, quiz):
@@ -503,11 +507,10 @@ def process_quiz(page, quiz):
     
     if continue_btn:
         continue_btn.click()
-        print(f"Continuing quiz: {quiz['name']}")
         sleep(3)
         return True
     else:
-        print(f"No continue button found for quiz: {quiz['name']}")
+        console.print(f"[yellow]No continue button found for quiz: {quiz['name']}[/yellow]")
         return False
 
 def process_course(page, course_name, course_url):
@@ -524,28 +527,48 @@ def process_course(page, course_name, course_url):
     capture_course_overview(page, course_folder)
 
     # Get all resources (PDFs, URLs, Quizzes) and let user select
-    print(f"\n=== Processing {course_name} ===")
+    console.print(f"\n[bold blue]=== Processing {course_name} ===[/bold blue]")
     resource_groups = get_all_resources(page)
     
     if resource_groups:
         selected_resources = select_all_resources(resource_groups)
         
         if selected_resources:
-            print("Selected resources:")
-            for resource in selected_resources:
-                print(f"- {resource['name']} ({resource['url']})")
-            
-            # Process each selected resource by type
-            for resource in selected_resources:
-                if resource['type'] == 'pdf':
-                    download_pdf_resource(page, resource, course_folder)
-                elif resource['type'] == 'url':
-                    open_url_resource(page, resource, course_folder)
-                elif resource['type'] == 'quiz':
-                    if process_quiz(page, resource):
-                        process_quiz_questions(page, resource, course_name)
+            # Process resources with progress bar
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console
+            ) as progress:
+                
+                task = progress.add_task("Processing resources...", total=len(selected_resources))
+                
+                # Process each selected resource by type
+                for i, resource in enumerate(selected_resources, 1):
+                    resource_type = {"pdf": "PDF", "url": "URL", "quiz": "Quiz"}[resource['type']]
+                    progress.update(task, description=f"{i}/{len(selected_resources)} ({resource_type}) {resource['display_name'][:30]}...")
+                    
+                    if resource['type'] == 'pdf':
+                        download_pdf_resource(page, resource, course_folder, task, progress)
+                    elif resource['type'] == 'url':
+                        open_url_resource(page, resource, course_folder, task, progress)
+                    elif resource['type'] == 'quiz':
+                        if process_quiz(page, resource):
+                            # For quizzes, create sub-progress for questions
+                            question_buttons = page.query_selector_all("a.qnbutton")
+                            question_count = len(question_buttons) if question_buttons else 0
+                            
+                            quiz_task = progress.add_task(f"Quiz questions...", total=question_count)
+                            process_quiz_questions(page, resource, course_name, quiz_task, progress)
+                            progress.remove_task(quiz_task)
+                    
+                    progress.advance(task, 1)
+                    
+            console.print(f"[green]✓ Completed processing {course_name}[/green]")
     else:
-        print("No resources found")
+        console.print("[yellow]No resources found[/yellow]")
 
     return True
 
@@ -568,7 +591,7 @@ def capture_course_overview(page, course_folder):
             return True
             
     except Exception as e:
-        print(f"Error capturing course overview: {e}")
+        console.print(f"[red]Error capturing course overview: {e}[/red]")
         return False
 
 def get_available_courses(page):
@@ -631,19 +654,19 @@ def get_available_courses(page):
                     'url': url
                 })
             except Exception as e:
-                print(f"Error parsing course link: {e}")
+                console.print(f"[red]Error parsing course link: {e}[/red]")
                 continue
         
         return courses
         
     except Exception as e:
-        print(f"Error getting courses: {e}")
+        console.print(f"[red]Error getting courses: {e}[/red]")
         return []
 
 def select_courses(available_courses):
     """Prompt user to select courses to process."""
     if not available_courses:
-        print("No courses found")
+        console.print("[yellow]No courses found[/yellow]")
         return []
     
     # Create choices for questionary
@@ -686,7 +709,6 @@ def select_courses(available_courses):
         ).ask()
     
     if selected_courses:
-        print(f"\nSelected {len(selected_courses)} course(s)")
         return selected_courses
     else:
         return []
@@ -704,23 +726,25 @@ def main():
 
         # Handle login if needed
         if not login(page):
-            print("Login failed")
+            console.print("[red]Login failed[/red]")
             browser.close()
             return
-
-        print()
+        
+        console.print()
 
         # Get available courses from dashboard
-        available_courses = get_available_courses(page)
+        with console.status("[bold green]Fetching available courses..."):
+            available_courses = get_available_courses(page)
+        
         if not available_courses:
-            print("No available courses found")
+            console.print("[red]No available courses found[/red]")
             browser.close()
             return
 
         # Let user select courses to process
         selected_courses = select_courses(available_courses)
         if not selected_courses:
-            print("No courses selected")
+            console.print("[yellow]No courses selected[/yellow]")
             browser.close()
             return
 
@@ -731,7 +755,7 @@ def main():
         page.goto("about:blank") # Free up any still open resources
 
         browser.close()
-        print("Scraping completed.")
+        console.print("[bold green]✓ Scraping completed.[/bold green]")
 
 if __name__ == "__main__":
     main()
