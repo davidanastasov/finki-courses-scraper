@@ -573,7 +573,7 @@ def process_course(page, course_name, course_url):
     """Process a single course."""
     # Navigate directly to the course URL
     page.goto(course_url)
-    sleep(2)
+    sleep(1)
 
     course_name_clean = clean_filename(course_name)
     course_folder = f"output/{course_name_clean}"
