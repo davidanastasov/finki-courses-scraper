@@ -141,6 +141,19 @@ def get_all_resources(page):
                         'display_name': resource_name
                     })
 
+            # Find folder links (mod/folder)
+            folder_links = section.query_selector_all("a.aalink[href*='mod/folder']")
+            for link in folder_links:
+                instancename = link.query_selector(".instancename")
+                if instancename:
+                    folder_name = instancename.evaluate("el => el.childNodes[0].textContent").strip()
+                    resource_list.append({
+                        'name': f"📁 {folder_name}",
+                        'url': link.get_attribute("href"),
+                        'type': 'folder',
+                        'display_name': folder_name
+                    })
+
             # Find URL links (mod/url)
             url_links = section.query_selector_all("a.aalink[href*='mod/url']")
             for link in url_links:
@@ -209,7 +222,7 @@ def select_all_resources(resource_groups):
                 asyncio.set_event_loop(new_loop)
                 try:
                     return questionary.checkbox(
-                        "Select resources to download (📄 PDFs, 🔗 URLs, 📝 Quizzes):",
+                        "Select resources to download (📄 PDFs, 📁 Folders, 🔗 URLs, 📝 Quizzes):",
                         choices=all_choices
                     ).ask()
                 finally:
@@ -221,7 +234,7 @@ def select_all_resources(resource_groups):
         else:
             # No event loop running, can use questionary directly
             selected_resources = questionary.checkbox(
-                "Select resources to download (📄 PDFs, 🔗 URLs, 📝 Quizzes):",
+                "Select resources to download (📄 PDFs, 📁 Folders, 🔗 URLs, 📝 Quizzes):",
                 choices=all_choices
             ).ask()
         
@@ -269,6 +282,49 @@ def download_pdf_resource(page, resource, course_folder, task_id=None, progress=
         
     except Exception as e:
         console.print(f"[red]Error downloading PDF {resource['display_name']}: {e}[/red]")
+        return False
+
+def download_folder_resource(page, resource, course_folder, task_id=None, progress=None):
+    """Download a folder resource as a zip file."""
+    try:
+        # Create downloads folder
+        documents_folder = os.path.join(course_folder, "documents")
+        os.makedirs(documents_folder, exist_ok=True)
+        
+        # Set up download handling
+        def handle_download(download):
+            # Get the suggested filename or create one
+            suggested_name = download.suggested_filename
+            if not suggested_name or not suggested_name.endswith('.zip'):
+                suggested_name = f"{clean_filename(resource['display_name'])}.zip"
+            
+            download_path = os.path.join(documents_folder, suggested_name)
+            download.save_as(download_path)
+        
+        # Listen for downloads
+        page.on("download", handle_download)
+        
+        # Navigate to the folder URL
+        page.goto(resource['url'], wait_until="domcontentloaded")
+        sleep(1)
+        
+        # Find and click the download button
+        download_button = page.query_selector(".folderbuttons button[type='submit']")
+        if download_button:
+            download_button.click()
+            sleep(2)  # Wait for download to start
+        else:
+            console.print(f"[yellow]No download button found for folder: {resource['display_name']}[/yellow]")
+            page.remove_listener("download", handle_download)
+            return False
+        
+        # Remove the download listener
+        page.remove_listener("download", handle_download)
+        
+        return True
+        
+    except Exception as e:
+        console.print(f"[red]Error downloading folder {resource['display_name']}: {e}[/red]")
         return False
 
 def open_url_resource(page, resource, course_folder, task_id=None, progress=None):
@@ -547,11 +603,13 @@ def process_course(page, course_name, course_url):
                 
                 # Process each selected resource by type
                 for i, resource in enumerate(selected_resources, 1):
-                    resource_type = {"pdf": "PDF", "url": "URL", "quiz": "Quiz"}[resource['type']]
+                    resource_type = {"pdf": "PDF", "folder": "Folder", "url": "URL", "quiz": "Quiz"}[resource['type']]
                     progress.update(task, description=f"{i}/{len(selected_resources)} ({resource_type}) {resource['display_name'][:30]}...")
                     
                     if resource['type'] == 'pdf':
                         download_pdf_resource(page, resource, course_folder, task, progress)
+                    elif resource['type'] == 'folder':
+                        download_folder_resource(page, resource, course_folder, task, progress)
                     elif resource['type'] == 'url':
                         open_url_resource(page, resource, course_folder, task, progress)
                     elif resource['type'] == 'quiz':
