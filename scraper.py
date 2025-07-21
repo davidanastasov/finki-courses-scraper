@@ -645,7 +645,6 @@ def select_quizzes(quiz_groups):
             ).ask()
         
         if selected_quizzes:
-            print(f"\nSelected {len(selected_quizzes)} quiz(s) total")
             return selected_quizzes
         else:
             print("No quizzes selected")
@@ -666,10 +665,8 @@ def capture_course_overview(page, course_folder):
             # Take screenshot of the main region
             screenshot_path = os.path.join(course_folder, "course.png")
             main_region.screenshot(path=screenshot_path)
-            print(f"Course overview screenshot saved: course.png")
             return True
         else:
-            print("Main region not found, taking full page screenshot instead")
             screenshot_path = os.path.join(course_folder, "course.png")
             page.screenshot(path=screenshot_path, full_page=True)
             return True
@@ -697,7 +694,6 @@ def main():
 
         # Process each course
         for course in COURSES:
-            print(f"\nProcessing course: {course}")
             process_course(page, course)
 
         page.goto("about:blank") # Free up any still open resources
