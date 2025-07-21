@@ -111,36 +111,6 @@ def login(page):
         print("Already logged in, skipping login process")
         return True
 
-def get_quiz_groups(page):
-    """Extract quiz groups from the current course page."""
-    sections = page.query_selector_all("li.section.main")
-    quiz_groups = {}
-
-    for section in sections:
-        # Extract the section name
-        section_name = section.query_selector(".sectionname span")
-        if section_name:
-            section_name_text = section_name.inner_text().strip()
-
-            # Find all quiz links within this section
-            quiz_links = section.query_selector_all("a.aalink:has(.accesshide:text(' Quiz'))")
-            quiz_list = []
-            for link in quiz_links:
-                instancename = link.query_selector(".instancename")
-                if instancename:
-                    # Get all text nodes of instancename, excluding nested elements
-                    quiz_name = instancename.evaluate("el => el.childNodes[0].textContent").strip()
-                    quiz_list.append({
-                        'name': quiz_name,
-                        'url': link.get_attribute("href"),
-                        'type': 'quiz'
-                    })
-
-            if quiz_list:
-                quiz_groups[section_name_text] = quiz_list
-
-    return quiz_groups
-
 def get_all_resources(page):
     """Extract all resources (PDFs, URLs, Quizzes) grouped by sections."""
     sections = page.query_selector_all("li.section.main")
@@ -590,68 +560,6 @@ def process_course(page, course):
         print("No resources found")
 
     return True
-
-def select_quizzes(quiz_groups):
-    """Prompt user to select quizzes grouped by sections with checkbox interface."""
-    
-    # Create a single list of choices with separators for sections
-    all_choices = []
-    
-    for section_name, quizzes in quiz_groups.items():
-        if not quizzes:  # Skip empty sections
-            continue
-        
-        # Add section separator
-        all_choices.append(questionary.Separator(f"=== {section_name} ==="))
-        
-        # Add quiz choices for this section
-        for quiz in quizzes:
-            all_choices.append(questionary.Choice(title=quiz['name'], value=quiz))
-    
-    # Show single checkbox prompt with all sections
-    if all_choices:
-        # Try to get the current event loop
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-        
-        # If there's a running loop, we need to handle it differently
-        if current_loop is not None:
-            # Run questionary in a thread to avoid event loop conflicts
-            import concurrent.futures
-            import threading
-            
-            def run_questionary():
-                # Create a new event loop for this thread
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    return questionary.checkbox(
-                        "Select quizzes (use Space to select/deselect, Enter to confirm):",
-                        choices=all_choices
-                    ).ask()
-                finally:
-                    new_loop.close()
-            
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(run_questionary)
-                selected_quizzes = future.result()
-        else:
-            # No event loop running, can use questionary directly
-            selected_quizzes = questionary.checkbox(
-                "Select quizzes (use Space to select/deselect, Enter to confirm):",
-                choices=all_choices
-            ).ask()
-        
-        if selected_quizzes:
-            return selected_quizzes
-        else:
-            print("No quizzes selected")
-            return []
-    else:
-        print("No quizzes found")
-        return []
 
 def capture_course_overview(page, course_folder):
     """Capture a screenshot of the main course page."""
