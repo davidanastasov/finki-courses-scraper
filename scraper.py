@@ -700,6 +700,8 @@ def main():
             print(f"\nProcessing course: {course}")
             process_course(page, course)
 
+        page.goto("about:blank") # Free up any still open resources
+
         browser.close()
         print("Scraping completed.")
 
