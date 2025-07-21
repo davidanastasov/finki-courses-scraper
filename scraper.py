@@ -171,13 +171,15 @@ def remove_unwanted_elements(page):
                 contentDiv.querySelectorAll('.im-controls').forEach(el => { el.remove() });
                 contentDiv.querySelectorAll('.prompt').forEach(el => { el.remove() });
                 contentDiv.querySelector('textarea.coderunner-answer')?.remove()
+                contentDiv.querySelector('#goto-top-link')?.remove();
             }
         """)
         sleep(0.1)
         if (page.query_selector("div.content .ui_wrapper") is None and 
             page.query_selector("div.content .im-controls") is None and 
             page.query_selector("div.content .prompt") is None) and \
-            page.query_selector("div.content textarea.coderunner-answer") is None:
+            page.query_selector("div.content textarea.coderunner-answer") and \
+            page.query_selector("div.content #goto-top-link") is None:
             break
 
 def ensure_question_fully_loaded(page):
