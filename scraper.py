@@ -562,6 +562,9 @@ def process_course(page, course):
     course_folder = f"output/{course_name_clean}"
     os.makedirs(course_folder, exist_ok=True)
 
+    # Capture course overview screenshot
+    capture_course_overview(page, course_folder)
+
     # Get all resources (PDFs, URLs, Quizzes) and let user select
     print(f"\n=== Processing {course} ===")
     resource_groups = get_all_resources(page)
@@ -652,6 +655,30 @@ def select_quizzes(quiz_groups):
     else:
         print("No quizzes found")
         return []
+
+def capture_course_overview(page, course_folder):
+    """Capture a screenshot of the main course page."""
+    try:
+        # Remove header/footer for privacy using existing function
+        remove_header_and_footer(page)
+        
+        # Find the main region element
+        main_region = page.query_selector("#region-main")
+        if main_region:
+            # Take screenshot of the main region
+            screenshot_path = os.path.join(course_folder, "course.png")
+            main_region.screenshot(path=screenshot_path)
+            print(f"Course overview screenshot saved: course.png")
+            return True
+        else:
+            print("Main region not found, taking full page screenshot instead")
+            screenshot_path = os.path.join(course_folder, "course.png")
+            page.screenshot(path=screenshot_path, full_page=True)
+            return True
+            
+    except Exception as e:
+        print(f"Error capturing course overview: {e}")
+        return False
 
 def main():
     """Main function to run the scraper."""
